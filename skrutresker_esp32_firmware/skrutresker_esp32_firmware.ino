@@ -1,106 +1,227 @@
-#include <Adafruit_NeoPixel.h>
+/*** User defines ***/ 
+// Pinout 
+#define MOTOR_RIGHT_PIN (int)(4)
+#define MOTOR_LEFT_PIN  (int)(15)
+#define WEAPON_PIN      (int)(2) // Also led pin :)
 
-#define LED_PIN     8
-#define NUM_LEDS    1
+// PWM constants
+#define PWM_FREQUENCY_HZ (int)(400)
+#define PWM_PERIOD_MS (float)(1000.0/PWM_FREQUENCY_HZ)
+#define PWM_RESOLUTION_BITS (int)(12)
+#define PWM_INIT_DUTY  (int)(128)
+#define PWM_MAX_DUTY (int)(4095)
+#define PWM_MAX_PULSE_WIDTH_MS (float)(2.0)
+#define PWM_ZERO_PULSE_WIDTH_MS (float)(1.5)
+#define PWM_MIN_PULSE_WIDTH_MS (float)(1.0)
 
-Adafruit_NeoPixel strip(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
+// Watchdog constants 
+#define SIGNAL_TIMEOUT_MS (int)(500)
 
-// User defines
+/*** User variables ***/ 
 typedef enum{
+  startup,
   idle, 
   drive,  
   armed, 
   active,
 } states_t; 
 
-uint8_t MOTOR_RIGHT_PIN = 4; 
-uint8_t MOTOR_LEFT_PIN = 15;
-uint8_t WEAPON_PIN = 2; 
+int state = startup; 
 
-uint16_t PWM_FREQUENCY = 24000; 
-uint16_t PWM_RESOLUTION = 8; 
-uint8_t PWM_CHANNEL_MOTOR_RIGHT = 0; 
-uint8_t PWM_CHANNEL_MOTOR_LEFT = 1; 
-uint8_t PWM_CHANNEL_WEAPON = 2; 
-uint8_t PWM_INIT_DUTY = 128; 
+bool drive_active = false; 
+bool weapon_armed = false; 
+bool signal_timeout = false; 
 
-uint8_t duty = PWM_INIT_DUTY; 
-// User functions
-void state_machine_run(uint8_t state) {
+float weapon_throttle = 0.0; 
+float motor_right_throttle = 0.0; 
+float motor_left_throttle = 0.0; 
+float last_recieved_signal = 0.0; 
+
+/*** User functions ***/ 
+/*
+* 
+*/
+void pwm_init()
+{
+  ledcAttach(MOTOR_RIGHT_PIN, PWM_FREQUENCY_HZ, PWM_RESOLUTION_BITS);
+  ledcWrite(MOTOR_RIGHT_PIN, 0);
+  
+  ledcAttach(MOTOR_LEFT_PIN, PWM_FREQUENCY_HZ, PWM_RESOLUTION_BITS);
+  ledcWrite(MOTOR_LEFT_PIN, 0);
+  
+  ledcAttach(WEAPON_PIN, PWM_FREQUENCY_HZ, PWM_RESOLUTION_BITS);
+  ledcWrite(WEAPON_PIN, 0);
+}
+
+/*
+* 
+*/
+void pwm_update_duty(float pulsewidth_ms, uint8_t pin)
+{
+  float dutyfloat = (pulsewidth_ms / PWM_PERIOD_MS) * PWM_MAX_DUTY;
+  int duty = (int)dutyfloat;
+  ledcWrite(pin, duty);
+}
+
+/*
+* 
+*/
+void terminal_receive() {
+  if (Serial.available()) {
+    String input = Serial.readStringUntil('\n');
+    input.trim();
+
+    float pulsewidth_ms = input.toFloat(); 
+
+    if (pulsewidth_ms >= PWM_MIN_PULSE_WIDTH_MS && pulsewidth_ms <= PWM_MAX_PULSE_WIDTH_MS){
+      pwm_update_duty(pulsewidth_ms, MOTOR_LEFT_PIN);
+      pwm_update_duty(pulsewidth_ms, MOTOR_RIGHT_PIN);
+      pwm_update_duty(pulsewidth_ms, WEAPON_PIN);
+    }   
+  } 
+}
+
+/*
+* 
+*/
+void ibus_init()
+{
+
+}
+
+/*
+* 
+*/
+void ibus_update_data()
+{
+
+}
+
+/*
+* 
+*/
+void motor_init()
+{
+  pwm_update_duty(MOTOR_LEFT_PIN, PWM_ZERO_PULSE_WIDTH_MS);
+  pwm_update_duty(MOTOR_RIGHT_PIN, PWM_ZERO_PULSE_WIDTH_MS);
+}
+
+/*
+* 
+*/
+void motor_deinit()
+{
+  pwm_update_duty(MOTOR_LEFT_PIN, 0.0);
+  pwm_update_duty(MOTOR_RIGHT_PIN, 0.0);
+}
+
+/*
+* 
+*/
+void weapon_init()
+{
+  pwm_update_duty(WEAPON_PIN, PWM_ZERO_PULSE_WIDTH_MS);
+}
+
+/*
+* 
+*/
+void weapon_deinit()
+{
+  pwm_update_duty(WEAPON_PIN, 0.0);
+}
+
+/*
+* 
+*/
+void terminal_init()
+{
+  Serial.begin(115200);              
+  while (!Serial) { delay(10); }      
+}
+
+/*
+* 
+*/
+void reset_state_machine()
+{
+  weapon_throttle = PWM_ZERO_PULSE_WIDTH_MS; 
+  weapon_armed = false; 
+  drive_active = false; 
+  state = idle; 
+}
+
+/*
+* 
+*/
+void state_machine_run() {
   switch(state){
+    case startup: 
+      terminal_init();
+      ibus_init();
+      pwm_init();
+      Serial.print("Setup complete!\n");
+      state = idle; 
+
     case idle: 
 
+      if (drive_active == true){
+        motor_init();
+        state = drive; 
+      }
       break;
 
     case drive: 
 
+      if (drive_active == false){
+        motor_deinit();
+        state = idle; 
+      }else if(weapon_armed == true){
+        weapon_init();
+        state = armed; 
+      }
       break; 
 
     case armed: 
 
+      if (weapon_armed == false){
+        weapon_deinit();
+        state = drive; 
+      }else if(weapon_throttle > PWM_ZERO_PULSE_WIDTH_MS || weapon_throttle < PWM_ZERO_PULSE_WIDTH_MS){
+        state = active; 
+      }
       break; 
 
     case active: 
-
+      if (weapon_throttle == PWM_ZERO_PULSE_WIDTH_MS){
+        state = armed; 
+      }
       break; 
   }
 }
 
-void led_setup()
+/*
+* 
+*/
+void control_loop_run()
 {
-  strip.begin();
-  strip.setBrightness(5);      
-  strip.show();
-}
-
-void pwm_setup()
-{
-  ledcAttach(MOTOR_RIGHT_PIN, PWM_FREQUENCY, PWM_RESOLUTION);
-  ledcWrite(PWM_CHANNEL_MOTOR_RIGHT, PWM_INIT_DUTY);
-  
-  ledcAttach(MOTOR_LEFT_PIN, PWM_FREQUENCY, PWM_RESOLUTION);
-  ledcWrite(PWM_CHANNEL_MOTOR_LEFT, PWM_INIT_DUTY);
-}
-
-void terminal_recieve()
-{
-  if (Serial.available()) {
-    String input = Serial.readStringUntil('\n');
-    input.trim(); 
-    duty = input.toInt();
-    if (duty >= 0 && duty <= 255) {
-      ledcWrite(PWM_CHANNEL_MOTOR_LEFT, duty);
-      ledcWrite(PWM_CHANNEL_MOTOR_LEFT, duty);
-      Serial.println(duty);
-    } 
+  if (millis() - last_recieved_signal > SIGNAL_TIMEOUT_MS){
+  signal_timeout = true; 
+  reset_state_machine();
+  }else{
+    last_recieved_signal = millis();
+    signal_timeout = false; 
+    state_machine_run();
   }
 }
-void ibus_setup()
-{
 
-}
-
-void motor_setup()
-{
-
-}
-
-void weapon_setup()
-{
-  
-}
-
-// Main function
+/*** Main loop/setup ***/
 void setup() {
-  pwm_setup();
-  led_setup();
+
 }
 
 void loop() {
-  terminal_recieve();
-  strip.setPixelColor(0, strip.Color(0, 255, 0)); 
-  delay(300);
-  strip.setPixelColor(0, strip.Color(0, 0, 0)); 
+  control_loop_run();
 }
 
 
