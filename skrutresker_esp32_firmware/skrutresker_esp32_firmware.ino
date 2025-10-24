@@ -50,13 +50,13 @@ FlyskyIBUS ibus(Serial2, RADIO_PIN);
 
 int state = startup;
 
-uint16_t ibus_buffer[IBUS_CHANNELS];
-
 bool drive_active = false;
 bool weapon_armed = false;
 bool signal_timeout = false;
 
 float weapon_throttle = 0.0;
+float throttle_y = 0; 
+float throttle_x = 0; 
 float motor_right_throttle = 0.0;
 float motor_left_throttle = 0.0;
 float last_recieved_signal = 0.0;
@@ -96,58 +96,38 @@ void ibus_init() {
 * 
 */
 void ibus_update_data() {
-  throttle_y = ibus.getChannel(right_joystick_verticle);
-  throttle_x = ibus.getChannel(right_joystick_horizontal);
-  weapon_throttle = ibus.getChannel(left_joystick_verticle);
+  throttle_y = ibus.getChannel(right_joystick_verticle) / 1000.0;
+  throttle_x = ibus.getChannel(right_joystick_horizontal) / 1000.0;
+  weapon_throttle = ibus.getChannel(left_joystick_verticle) / 1000.0;
   if (ibus.getChannel(switch_A) == 2000){
     weapon_armed = true;
+  }else{
+    weapon_armed = false;
   }
   if (ibus.getChannel(switch_D) == 2000){
     drive_active = true;
+  }else{
+    drive_active = false;
   }
-}
-
-/*
-* 
-*/
-void motor_init() {
-  pwm_update_duty(MOTOR_LEFT_PIN, PWM_ZERO_PULSE_WIDTH_MS);
-  pwm_update_duty(MOTOR_RIGHT_PIN, PWM_ZERO_PULSE_WIDTH_MS);
-}
-
-/*
-* 
-*/
-void motor_deinit() {
-  pwm_update_duty(MOTOR_LEFT_PIN, 0.0);
-  pwm_update_duty(MOTOR_RIGHT_PIN, 0.0);
+  Serial.println(throttle_y);
+  Serial.println(throttle_x);
+  Serial.println(weapon_throttle);
+  Serial.println(weapon_armed);
+  Serial.println(drive_active);
+  Serial.println(state);
 }
 
 /*
 *
 */
-void motor_update_speed_setpoint(int motor_pin, uint16_t pulse_width_ms){
+void motor_update_speed_setpoint(int motor_pin, float pulse_width_ms){
   pwm_update_duty(pulse_width_ms, motor_pin);
 }
 
 /*
-* 
-*/
-void weapon_init() {
-  pwm_update_duty(WEAPON_PIN, PWM_ZERO_PULSE_WIDTH_MS);
-}
-
-/*
-* 
-*/
-void weapon_deinit() {
-  pwm_update_duty(WEAPON_PIN, 0.0);
-}
-
-/*
 *
 */
-void weapon_update_speed_setpoint(uint16_t pulse_width_ms){
+void weapon_update_speed_setpoint(float pulse_width_ms){
   pwm_update_duty(pulse_width_ms, WEAPON_PIN);
 }
 
@@ -183,39 +163,36 @@ void state_machine_run() {
       delay(50);
       Serial.print("Setup complete!\n");
       state = idle;
+      break;
 
     case idle:
 
       if (drive_active == true) {
-        motor_init();
         state = drive;
       }
       break;
 
     case drive:
+      motor_update_speed_setpoint(MOTOR_LEFT_PIN, throttle_y);
+      motor_update_speed_setpoint(MOTOR_RIGHT_PIN, throttle_y);
 
       if (drive_active == false) {
-        motor_deinit();
+        motor_update_speed_setpoint(MOTOR_LEFT_PIN, 0.0);
+        motor_update_speed_setpoint(MOTOR_RIGHT_PIN, 0.0);
         state = idle;
       } else if (weapon_armed == true) {
-        weapon_init();
         state = armed;
       }
       break;
 
     case armed:
+      motor_update_speed_setpoint(MOTOR_LEFT_PIN, throttle_y);
+      motor_update_speed_setpoint(MOTOR_RIGHT_PIN, throttle_y);
+      weapon_update_speed_setpoint(weapon_throttle);
 
       if (weapon_armed == false) {
-        weapon_deinit();
+        weapon_update_speed_setpoint(0.0);
         state = drive;
-      } else if (weapon_throttle > PWM_ZERO_PULSE_WIDTH_MS || weapon_throttle < PWM_ZERO_PULSE_WIDTH_MS) {
-        state = active;
-      }
-      break;
-
-    case active:
-      if (weapon_throttle == PWM_ZERO_PULSE_WIDTH_MS) {
-        state = armed;
       }
       break;
   }
@@ -225,24 +202,23 @@ void state_machine_run() {
 * 
 */
 void control_loop_run() {
-  if (millis() - last_recieved_signal > SIGNAL_TIMEOUT_MS) {
+  /*if (millis() - last_recieved_signal > SIGNAL_TIMEOUT_MS) {
     signal_timeout = true;
     reset_state_machine();
   } else {
     last_recieved_signal = millis();
     signal_timeout = false;
     state_machine_run();
-  }
+  }*/
+  if (state != startup){ibus_update_data();}
+  state_machine_run();
 }
 
 /*** Main loop/setup ***/
 void setup() {
-  Serial.begin(115200);
-  ibus_init();
+
 }
 
 void loop() {
-  Serial.println("New_update!");
-  ibus_update_data();
-  delay(1000);
+  control_loop_run();
 }
