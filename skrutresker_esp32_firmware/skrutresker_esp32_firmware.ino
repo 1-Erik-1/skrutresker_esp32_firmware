@@ -248,11 +248,23 @@ void state_machine_run() {
 
     case armed:
       motor_tank_drive(throttle_x, throttle_y);
-      weapon_update_speed_setpoint(weapon_throttle);
+      weapon_update_speed_setpoint(PWM_ZERO_PULSE_WIDTH_MS);
 
-      if (weapon_armed == false) {
+      if (weapon_armed == false || drive_active == false) {
         weapon_update_speed_setpoint(0.0);
         state = drive;
+      } else if (weapon_throttle < 1.4 || weapon_throttle > 1.6) {
+        state = active; 
+      }
+      break;
+
+    case active: 
+      motor_tank_drive(throttle_x, throttle_y);
+      weapon_update_speed_setpoint(weapon_throttle);
+
+      if ((weapon_throttle >= 1.4 && weapon_throttle <= 1.6) || weapon_armed == false || drive_active == false){
+        weapon_update_speed_setpoint(PWM_ZERO_PULSE_WIDTH_MS);
+        state = armed; 
       }
       break;
   }
@@ -271,7 +283,7 @@ void control_loop_run() {
     motor_update_speed_setpoint(MOTOR_RIGHT_PIN, 0.0);
     motor_update_speed_setpoint(WEAPON_PIN, 0.0);
     reset_state_machine(); 
-    delay(500);
+    delay(50);
   }else{
     signal_timeout = false; 
     if (state != startup){ibus_update_data();}
