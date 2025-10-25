@@ -147,7 +147,7 @@ void motor_tank_drive(float throttle_x, float throttle_y)
   tank_drive.turn    = (throttle_x - 1.5f) * 2.0f;
 
   tank_drive.left_speed  = tank_drive.forward + tank_drive.turn;
-  tank_drive.right_speed = tank_drive.forward - tank_drive.turn;
+  tank_drive.right_speed = -(tank_drive.forward - tank_drive.turn);
 
   // Clamp 
   if (tank_drive.left_speed > 1.0f) tank_drive.left_speed = 1.0f;
@@ -289,7 +289,7 @@ void control_loop_run() {
     if (state != startup){ibus_update_data();}
     state_machine_run();
   }
-  timer_one_second();
+  //timer_one_second();
 }
 
 /*** Main loop/setup ***/
