@@ -18,11 +18,8 @@
 #define PWM_ZERO_PULSE_WIDTH_MS (float)(1.5)
 #define PWM_MIN_PULSE_WIDTH_MS (float)(1.0)
 
-// Watchdog constants
-#define SIGNAL_TIMEOUT_MS (int)(500)
-
-// IBUS constants
-#define IBUS_CHANNELS (int)(10)
+// Timer constants
+#define TIMER_INTERVAL (float)(1000.0)
 
 /*** User variables ***/
 typedef enum {
@@ -46,9 +43,18 @@ typedef enum {
   switch_D
 } ibus_channels_t;
 
+typedef struct {
+  float forward;
+  float turn;
+  float right_speed;
+  float left_speed;
+} tank_drive_t; 
+
+tank_drive_t tank_drive; 
+
 FlyskyIBUS ibus(Serial2, RADIO_PIN);
 
-int state = startup;
+uint8_t state = startup;
 
 bool drive_active = false;
 bool weapon_armed = false;
@@ -59,12 +65,17 @@ float throttle_y = 0;
 float throttle_x = 0; 
 float motor_right_throttle = 0.0;
 float motor_left_throttle = 0.0;
-float last_recieved_signal = 0.0;
+float last_timer_event = 0.0;
+float current_timer_event = 0.0; 
 
 /*** User functions ***/
-/*
-* 
-*/
+
+/**
+ * @brief Initializes PWM outputs for motors and weapon.
+ * 
+ * Sets up LEDC PWM channels for right motor, left motor, and weapon pins
+ * using the defined frequency and resolution. Initializes all outputs to 0.
+ */
 void pwm_init() {
   ledcAttach(MOTOR_RIGHT_PIN, PWM_FREQUENCY_HZ, PWM_RESOLUTION_BITS);
   ledcWrite(MOTOR_RIGHT_PIN, 0);
@@ -76,82 +87,134 @@ void pwm_init() {
   ledcWrite(WEAPON_PIN, 0);
 }
 
-/*
-* 
-*/
+/**
+ * @brief Updates PWM duty cycle for a given pin.
+ * 
+ * @param pulsewidth_ms  Desired pulse width in milliseconds.
+ * @param pin            Output pin to apply the PWM signal.
+ */
 void pwm_update_duty(float pulsewidth_ms, uint8_t pin) {
   float dutyfloat = (pulsewidth_ms / PWM_PERIOD_MS) * PWM_MAX_DUTY;
   int duty = (int)dutyfloat;
   ledcWrite(pin, duty);
 }
 
-/*
-* 
-*/
+/**
+ * @brief Initializes the FlySky IBUS receiver.
+ */
 void ibus_init() {
   ibus.begin();
 }
 
-/*
-* 
-*/
+/**
+ * @brief Reads and updates control inputs from the IBUS receiver.
+ * 
+ * Updates throttle, steering, and weapon inputs, along with
+ * drive and weapon arming states. Prints diagnostic data to Serial.
+ */
 void ibus_update_data() {
   throttle_y = ibus.getChannel(right_joystick_verticle) / 1000.0;
   throttle_x = ibus.getChannel(right_joystick_horizontal) / 1000.0;
   weapon_throttle = ibus.getChannel(left_joystick_verticle) / 1000.0;
-  if (ibus.getChannel(switch_A) == 2000){
-    weapon_armed = true;
-  }else{
-    weapon_armed = false;
-  }
-  if (ibus.getChannel(switch_D) == 2000){
-    drive_active = true;
-  }else{
-    drive_active = false;
-  }
-  Serial.println(throttle_y);
-  Serial.println(throttle_x);
-  Serial.println(weapon_throttle);
-  Serial.println(weapon_armed);
-  Serial.println(drive_active);
-  Serial.println(state);
+
+  weapon_armed = (ibus.getChannel(switch_A) == 2000);
+  drive_active = (ibus.getChannel(switch_D) == 2000);
 }
 
-/*
-*
-*/
+/**
+ * @brief Sets motor speed based on a given pulse width.
+ * 
+ * @param motor_pin      Motor output pin.
+ * @param pulse_width_ms Desired PWM pulse width.
+ */
 void motor_update_speed_setpoint(int motor_pin, float pulse_width_ms){
   pwm_update_duty(pulse_width_ms, motor_pin);
 }
 
-/*
-*
-*/
+/**
+ * @brief Implements tank drive control using joystick inputs.
+ * 
+ * @param throttle_x Horizontal input (turn).
+ * @param throttle_y Vertical input (forward/reverse).
+ * 
+ * Maps joystick values into left/right motor outputs for differential drive,
+ * ensuring output is clamped between valid limits.
+ */
+void motor_tank_drive(float throttle_x, float throttle_y)
+{
+  // Normalize joystick inputs: now -1.0 to +1.0
+  tank_drive.forward = (throttle_y - 1.5f) * 2.0f;
+  tank_drive.turn    = (throttle_x - 1.5f) * 2.0f;
+
+  tank_drive.left_speed  = tank_drive.forward + tank_drive.turn;
+  tank_drive.right_speed = tank_drive.forward - tank_drive.turn;
+
+  // Clamp 
+  if (tank_drive.left_speed > 1.0f) tank_drive.left_speed = 1.0f;
+  if (tank_drive.left_speed < -1.0f) tank_drive.left_speed = -1.0f;
+  if (tank_drive.right_speed > 1.0f) tank_drive.right_speed = 1.0f;
+  if (tank_drive.right_speed < -1.0f) tank_drive.right_speed = -1.0f;
+
+  // Re-map back to motor range [1.0, 2.0]
+  tank_drive.left_speed  = 1.5f + (tank_drive.left_speed * 0.5f);
+  tank_drive.right_speed = 1.5f + (tank_drive.right_speed * 0.5f);
+
+  motor_update_speed_setpoint(MOTOR_LEFT_PIN, tank_drive.left_speed);
+  motor_update_speed_setpoint(MOTOR_RIGHT_PIN, tank_drive.right_speed);
+}
+
+/**
+ * @brief Updates weapon motor speed.
+ * 
+ * @param pulse_width_ms Desired PWM pulse width for the weapon motor.
+ */
 void weapon_update_speed_setpoint(float pulse_width_ms){
   pwm_update_duty(pulse_width_ms, WEAPON_PIN);
 }
 
-/*
-* 
-*/
+/**
+ * @brief Function that executes once every second, debugging prints. 
+ */
+void timer_one_second(){
+  current_timer_event = millis();
+  if (current_timer_event - last_timer_event >= TIMER_INTERVAL){
+    last_timer_event = current_timer_event; 
+    Serial.printf("Uptime: %.2fs\n", millis()/1000.0);
+    Serial.printf("Throttles (x, y, w): %.2f, %.2f, %.2f\n", throttle_x, throttle_y, weapon_throttle);
+    Serial.printf("Motor drive speeds (l, r): %.2f, %.2f\n", tank_drive.left_speed, tank_drive.right_speed);
+    Serial.printf("States (drv, arm, state, timeout): %d, %d, %d, %d\n", drive_active, weapon_armed, state, signal_timeout);
+  }
+}
+
+/**
+ * @brief Initializes the serial terminal for debugging.
+ */
 void terminal_init() {
   Serial.begin(115200);
   while (!Serial) { delay(10); }
 }
 
-/*
-* 
-*/
+/**
+ * @brief Resets system state and disables all outputs.
+ * 
+ * Sets weapon and drive states to idle and clears throttle values.
+ */
 void reset_state_machine() {
   weapon_throttle = PWM_ZERO_PULSE_WIDTH_MS;
+  throttle_x = PWM_ZERO_PULSE_WIDTH_MS; 
+  throttle_y = PWM_ZERO_PULSE_WIDTH_MS; 
   weapon_armed = false;
   drive_active = false;
   state = idle;
+  state_machine_run();
 }
 
-/*
-* 
-*/
+/**
+ * @brief Executes the main robot state machine.
+ * 
+ * Handles startup, idle, driving, and armed weapon states.
+ * Transitions occur based on IBUS switch inputs and control flags.
+ */
 void state_machine_run() {
   switch (state) {
     case startup:
@@ -166,15 +229,13 @@ void state_machine_run() {
       break;
 
     case idle:
-
       if (drive_active == true) {
         state = drive;
       }
       break;
 
     case drive:
-      motor_update_speed_setpoint(MOTOR_LEFT_PIN, throttle_y);
-      motor_update_speed_setpoint(MOTOR_RIGHT_PIN, throttle_y);
+      motor_tank_drive(throttle_x, throttle_y);
 
       if (drive_active == false) {
         motor_update_speed_setpoint(MOTOR_LEFT_PIN, 0.0);
@@ -186,8 +247,7 @@ void state_machine_run() {
       break;
 
     case armed:
-      motor_update_speed_setpoint(MOTOR_LEFT_PIN, throttle_y);
-      motor_update_speed_setpoint(MOTOR_RIGHT_PIN, throttle_y);
+      motor_tank_drive(throttle_x, throttle_y);
       weapon_update_speed_setpoint(weapon_throttle);
 
       if (weapon_armed == false) {
@@ -198,20 +258,26 @@ void state_machine_run() {
   }
 }
 
-/*
-* 
-*/
+/**
+ * @brief Runs the main control loop logic.
+ * 
+ * Checks for lost signal timeout and updates
+ * input data, then runs the state machine.
+ */
 void control_loop_run() {
-  /*if (millis() - last_recieved_signal > SIGNAL_TIMEOUT_MS) {
-    signal_timeout = true;
-    reset_state_machine();
-  } else {
-    last_recieved_signal = millis();
-    signal_timeout = false;
+  if (state != startup && ibus.hasFailsafe() == true){
+    signal_timeout = true; 
+    motor_update_speed_setpoint(MOTOR_LEFT_PIN, 0.0);
+    motor_update_speed_setpoint(MOTOR_RIGHT_PIN, 0.0);
+    motor_update_speed_setpoint(WEAPON_PIN, 0.0);
+    reset_state_machine(); 
+    delay(500);
+  }else{
+    signal_timeout = false; 
+    if (state != startup){ibus_update_data();}
     state_machine_run();
-  }*/
-  if (state != startup){ibus_update_data();}
-  state_machine_run();
+  }
+  timer_one_second();
 }
 
 /*** Main loop/setup ***/
