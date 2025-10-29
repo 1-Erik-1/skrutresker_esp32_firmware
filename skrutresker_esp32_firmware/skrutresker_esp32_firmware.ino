@@ -3,23 +3,28 @@
 
 /*** User defines ***/
 // Pinout
-#define MOTOR_RIGHT_PIN (int)(4)
-#define MOTOR_LEFT_PIN (int)(15)
-#define WEAPON_PIN (int)(2)  // Also led pin :)
-#define RADIO_PIN (int)(3)
+#define MOTOR_RIGHT_PIN         (int)(4)
+#define MOTOR_LEFT_PIN          (int)(15)
+#define WEAPON_PIN              (int)(2)  // Also led pin :)
+#define RADIO_PIN               (int)(3)
 
 // PWM constants
-#define PWM_FREQUENCY_HZ (int)(400)
-#define PWM_PERIOD_MS (float)(1000.0 / PWM_FREQUENCY_HZ)
-#define PWM_RESOLUTION_BITS (int)(12)
-#define PWM_INIT_DUTY (int)(128)
-#define PWM_MAX_DUTY (int)(4095)
-#define PWM_MAX_PULSE_WIDTH_MS (float)(2.0)
+#define PWM_FREQUENCY_HZ        (int)(400)
+#define PWM_PERIOD_MS           (float)(1000.0 / PWM_FREQUENCY_HZ)
+#define PWM_RESOLUTION_BITS     (int)(12)
+#define PWM_INIT_DUTY           (int)(128)
+#define PWM_MAX_DUTY            (int)(4095)
+#define PWM_MAX_PULSE_WIDTH_MS  (float)(2.0)
 #define PWM_ZERO_PULSE_WIDTH_MS (float)(1.5)
-#define PWM_MIN_PULSE_WIDTH_MS (float)(1.0)
+#define PWM_MIN_PULSE_WIDTH_MS  (float)(1.0)
 
 // Timer constants
-#define TIMER_INTERVAL (float)(1000.0)
+#define TIMER_INTERVAL          (float)(1000.0)
+
+// Throttle constants
+#define LOG_BASE                (float)(10.0)
+#define SCALE                   (float)(1.0f / logf(LOG_BASE + 1.0f))
+#define MOTOR_MAX_SPEED         (float)(0.5)
 
 /*** User variables ***/
 typedef enum {
@@ -142,25 +147,31 @@ void motor_update_speed_setpoint(int motor_pin, float pulse_width_ms){
  */
 void motor_tank_drive(float throttle_x, float throttle_y)
 {
-  // Normalize joystick inputs: now -1.0 to +1.0
-  tank_drive.forward = (throttle_y - 1.5f) * 2.0f;
-  tank_drive.turn    = (throttle_x - 1.5f) * 2.0f;
+  // Normalize joystick inputs from [0.0, 3.0] → [-1.0, 1.0]
+  float forward = (throttle_y - 1.5f) * 2.0f;
+  float turn    = (throttle_x - 1.5f) * 2.0f;
 
-  tank_drive.left_speed  = tank_drive.forward + tank_drive.turn;
-  tank_drive.right_speed = -(tank_drive.forward - tank_drive.turn);
+  // Logarithmicly scale throttle input
+  forward = copysignf(logf(LOG_BASE * fabsf(forward) + 1.0f) * SCALE, forward);
+  turn    = copysignf(logf(LOG_BASE * fabsf(turn) + 1.0f) * SCALE, turn);
 
-  // Clamp 
-  if (tank_drive.left_speed > 1.0f) tank_drive.left_speed = 1.0f;
-  if (tank_drive.left_speed < -1.0f) tank_drive.left_speed = -1.0f;
-  if (tank_drive.right_speed > 1.0f) tank_drive.right_speed = 1.0f;
-  if (tank_drive.right_speed < -1.0f) tank_drive.right_speed = -1.0f;
+  // Combine forward and turn for tank drive
+  float left_speed  = forward + turn;
+  float right_speed = -(forward - turn);
+
+  // Clamp to max speed
+  if (left_speed > MOTOR_MAX_SPEED) left_speed = MOTOR_MAX_SPEED;
+  if (left_speed < -MOTOR_MAX_SPEED) left_speed = -MOTOR_MAX_SPEED;
+  if (right_speed > MOTOR_MAX_SPEED) right_speed = MOTOR_MAX_SPEED;
+  if (right_speed < -MOTOR_MAX_SPEED) right_speed = -MOTOR_MAX_SPEED;
 
   // Re-map back to motor range [1.0, 2.0]
-  tank_drive.left_speed  = 1.5f + (tank_drive.left_speed * 0.5f);
-  tank_drive.right_speed = 1.5f + (tank_drive.right_speed * 0.5f);
+  left_speed  = 1.5f + (left_speed * 0.5f);
+  right_speed = 1.5f + (right_speed * 0.5f);
 
-  motor_update_speed_setpoint(MOTOR_LEFT_PIN, tank_drive.left_speed);
-  motor_update_speed_setpoint(MOTOR_RIGHT_PIN, tank_drive.right_speed);
+  // Update motors
+  motor_update_speed_setpoint(MOTOR_LEFT_PIN, left_speed);
+  motor_update_speed_setpoint(MOTOR_RIGHT_PIN, right_speed);
 }
 
 /**
@@ -169,7 +180,20 @@ void motor_tank_drive(float throttle_x, float throttle_y)
  * @param pulse_width_ms Desired PWM pulse width for the weapon motor.
  */
 void weapon_update_speed_setpoint(float pulse_width_ms){
-  pwm_update_duty(pulse_width_ms, WEAPON_PIN);
+  // Normalize joystick inputs from [0.0, 3.0] → [-1.0, 1.0]
+  float throttle = (pulse_width_ms - 1.5f) * 2.0f;
+  
+  // Logarithmicly scale throttle input
+  throttle = copysignf(logf(LOG_BASE * fabsf(throttle) + 1.0f) * SCALE, throttle);
+
+  // Clamp to max speed
+  if (throttle > MOTOR_MAX_SPEED) throttle = MOTOR_MAX_SPEED;
+  if (throttle < -MOTOR_MAX_SPEED) throttle = -MOTOR_MAX_SPEED;
+
+  // Re-map back to motor range [1.0, 2.0]
+  throttle  = 1.5f + (throttle * 0.5f);
+
+  pwm_update_duty(throttle, WEAPON_PIN);
 }
 
 /**
