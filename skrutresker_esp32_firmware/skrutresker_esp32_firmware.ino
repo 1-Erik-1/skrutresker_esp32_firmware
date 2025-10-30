@@ -10,21 +10,21 @@
 
 // PWM constants
 #define PWM_FREQUENCY_HZ        (int)(400)
-#define PWM_PERIOD_MS           (float)(1000.0 / PWM_FREQUENCY_HZ)
+#define PWM_PERIOD_MS           (float)(1000.0f / PWM_FREQUENCY_HZ)
 #define PWM_RESOLUTION_BITS     (int)(12)
 #define PWM_INIT_DUTY           (int)(128)
 #define PWM_MAX_DUTY            (int)(4095)
-#define PWM_MAX_PULSE_WIDTH_MS  (float)(2.0)
-#define PWM_ZERO_PULSE_WIDTH_MS (float)(1.5)
-#define PWM_MIN_PULSE_WIDTH_MS  (float)(1.0)
+#define PWM_MAX_PULSE_WIDTH_MS  (float)(2.0f)
+#define PWM_ZERO_PULSE_WIDTH_MS (float)(1.5f)
+#define PWM_MIN_PULSE_WIDTH_MS  (float)(1.0f)
 
 // Timer constants
-#define TIMER_INTERVAL          (float)(1000.0)
+#define TIMER_INTERVAL          (float)(1000.0f)
 
 // Throttle constants
-#define LOG_BASE                (float)(10.0)
-#define SCALE                   (float)(1.0f / logf(LOG_BASE + 1.0f))
-#define MOTOR_MAX_SPEED         (float)(0.5)
+#define EXPO_FACTOR_MOTOR       (float)(2.0f)
+#define EXPO_FACTOR_WEAPON      (float)(3.0f)
+#define MOTOR_MAX_SPEED         (float)(0.25f)
 
 /*** User variables ***/
 typedef enum {
@@ -74,7 +74,6 @@ float last_timer_event = 0.0;
 float current_timer_event = 0.0; 
 
 /*** User functions ***/
-
 /**
  * @brief Initializes PWM outputs for motors and weapon.
  * 
@@ -127,16 +126,6 @@ void ibus_update_data() {
 }
 
 /**
- * @brief Sets motor speed based on a given pulse width.
- * 
- * @param motor_pin      Motor output pin.
- * @param pulse_width_ms Desired PWM pulse width.
- */
-void motor_update_speed_setpoint(int motor_pin, float pulse_width_ms){
-  pwm_update_duty(pulse_width_ms, motor_pin);
-}
-
-/**
  * @brief Implements tank drive control using joystick inputs.
  * 
  * @param throttle_x Horizontal input (turn).
@@ -147,31 +136,35 @@ void motor_update_speed_setpoint(int motor_pin, float pulse_width_ms){
  */
 void motor_tank_drive(float throttle_x, float throttle_y)
 {
-  // Normalize joystick inputs from [0.0, 3.0] → [-1.0, 1.0]
-  float forward = (throttle_y - 1.5f) * 2.0f;
-  float turn    = (throttle_x - 1.5f) * 2.0f;
+  // Normalise joystick inputs 1.0, 2.0 to -1.0, 1.0
+  tank_drive.forward = (throttle_y - 1.5f) * 2.0f;
+  tank_drive.turn    = (throttle_x - 1.5f) * 2.0f;
 
-  // Logarithmicly scale throttle input
-  forward = copysignf(logf(LOG_BASE * fabsf(forward) + 1.0f) * SCALE, forward);
-  turn    = copysignf(logf(LOG_BASE * fabsf(turn) + 1.0f) * SCALE, turn);
+  // Apply exponential scaling
+  tank_drive.forward = copysignf(powf(fabsf(tank_drive.forward), EXPO_FACTOR_MOTOR), tank_drive.forward);
+  tank_drive.turn    = copysignf(powf(fabsf(tank_drive.turn), EXPO_FACTOR_MOTOR), tank_drive.turn);
 
-  // Combine forward and turn for tank drive
-  float left_speed  = forward + turn;
-  float right_speed = -(forward - turn);
+  // Tank steering
+  tank_drive.left_speed  = -(tank_drive.forward + tank_drive.turn);
+  tank_drive.right_speed = tank_drive.forward - tank_drive.turn;
 
-  // Clamp to max speed
-  if (left_speed > MOTOR_MAX_SPEED) left_speed = MOTOR_MAX_SPEED;
-  if (left_speed < -MOTOR_MAX_SPEED) left_speed = -MOTOR_MAX_SPEED;
-  if (right_speed > MOTOR_MAX_SPEED) right_speed = MOTOR_MAX_SPEED;
-  if (right_speed < -MOTOR_MAX_SPEED) right_speed = -MOTOR_MAX_SPEED;
+  // Clamp range -1.0, 1.0
+  if (tank_drive.left_speed > 1.0f) tank_drive.left_speed = 1.0f;
+  if (tank_drive.left_speed < -1.0f) tank_drive.left_speed = -1.0f;
+  if (tank_drive.right_speed > 1.0f) tank_drive.right_speed = 1.0f;
+  if (tank_drive.right_speed < -1.0f) tank_drive.right_speed = -1.0f;
 
-  // Re-map back to motor range [1.0, 2.0]
-  left_speed  = 1.5f + (left_speed * 0.5f);
-  right_speed = 1.5f + (right_speed * 0.5f);
+  // Apply maximum speed limit
+  tank_drive.left_speed  *= MOTOR_MAX_SPEED;
+  tank_drive.right_speed *= MOTOR_MAX_SPEED;
 
-  // Update motors
-  motor_update_speed_setpoint(MOTOR_LEFT_PIN, left_speed);
-  motor_update_speed_setpoint(MOTOR_RIGHT_PIN, right_speed);
+  // Remap back to motor range 1.0, 2.0
+  tank_drive.left_speed  = 1.5f + (tank_drive.left_speed * 0.5f);
+  tank_drive.right_speed = 1.5f + (tank_drive.right_speed * 0.5f);
+
+  // Update pwm output to motors
+  pwm_update_duty(tank_drive.left_speed, MOTOR_LEFT_PIN);
+  pwm_update_duty(tank_drive.right_speed, MOTOR_RIGHT_PIN);
 }
 
 /**
@@ -180,20 +173,21 @@ void motor_tank_drive(float throttle_x, float throttle_y)
  * @param pulse_width_ms Desired PWM pulse width for the weapon motor.
  */
 void weapon_update_speed_setpoint(float pulse_width_ms){
-  // Normalize joystick inputs from [0.0, 3.0] → [-1.0, 1.0]
-  float throttle = (pulse_width_ms - 1.5f) * 2.0f;
-  
-  // Logarithmicly scale throttle input
-  throttle = copysignf(logf(LOG_BASE * fabsf(throttle) + 1.0f) * SCALE, throttle);
+  // Normalise joystick inputs 1.0, 2.0 to -1.0, 1.0
+  weapon_throttle = (pulse_width_ms - 1.5f) * 2.0f;
 
-  // Clamp to max speed
-  if (throttle > MOTOR_MAX_SPEED) throttle = MOTOR_MAX_SPEED;
-  if (throttle < -MOTOR_MAX_SPEED) throttle = -MOTOR_MAX_SPEED;
+  // Apply exponential scaling
+  weapon_throttle = copysignf(powf(fabsf(weapon_throttle), EXPO_FACTOR_WEAPON), weapon_throttle);
 
-  // Re-map back to motor range [1.0, 2.0]
-  throttle  = 1.5f + (throttle * 0.5f);
+  // Clamp range -1.0, 1.0
+  if (weapon_throttle > 1.0f) weapon_throttle = 1.0f;
+  if (weapon_throttle < -1.0f) weapon_throttle = -1.0f;
 
-  pwm_update_duty(throttle, WEAPON_PIN);
+  // Remap back to motor range 1.0, 2.0
+  weapon_throttle  = 1.5f + (weapon_throttle * 0.5f);
+
+  // Update pwm output to motors
+  pwm_update_duty(weapon_throttle, WEAPON_PIN);
 }
 
 /**
@@ -262,8 +256,8 @@ void state_machine_run() {
       motor_tank_drive(throttle_x, throttle_y);
 
       if (drive_active == false) {
-        motor_update_speed_setpoint(MOTOR_LEFT_PIN, 0.0);
-        motor_update_speed_setpoint(MOTOR_RIGHT_PIN, 0.0);
+        pwm_update_duty(0.0, MOTOR_LEFT_PIN);
+        pwm_update_duty(0.0, MOTOR_RIGHT_PIN);
         state = idle;
       } else if (weapon_armed == true) {
         state = armed;
@@ -303,9 +297,9 @@ void state_machine_run() {
 void control_loop_run() {
   if (state != startup && ibus.hasFailsafe() == true){
     signal_timeout = true; 
-    motor_update_speed_setpoint(MOTOR_LEFT_PIN, 0.0);
-    motor_update_speed_setpoint(MOTOR_RIGHT_PIN, 0.0);
-    motor_update_speed_setpoint(WEAPON_PIN, 0.0);
+    pwm_update_duty(0.0, MOTOR_LEFT_PIN);
+    pwm_update_duty(0.0, MOTOR_RIGHT_PIN);
+    pwm_update_duty(0.0, WEAPON_PIN);
     reset_state_machine(); 
     delay(50);
   }else{
