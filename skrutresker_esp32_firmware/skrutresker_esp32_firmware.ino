@@ -146,6 +146,9 @@ void motor_tank_drive(float throttle_x, float throttle_y)
   tank_drive.forward = (throttle_y - 1.5f) * 2.0f;
   tank_drive.turn    = (throttle_x - 1.5f) * 2.0f;
 
+  tank_drive.forward *= 0.75; 
+  tank_drive.turn    *= 1.0;
+
   tank_drive.left_speed  = tank_drive.forward + tank_drive.turn;
   tank_drive.right_speed = -(tank_drive.forward - tank_drive.turn);
 
@@ -154,6 +157,9 @@ void motor_tank_drive(float throttle_x, float throttle_y)
   if (tank_drive.left_speed < -1.0f) tank_drive.left_speed = -1.0f;
   if (tank_drive.right_speed > 1.0f) tank_drive.right_speed = 1.0f;
   if (tank_drive.right_speed < -1.0f) tank_drive.right_speed = -1.0f;
+  
+  tank_drive.left_speed *= 0.35;
+  tank_drive.right_speed *= 0.35;
 
   // Re-map back to motor range [1.0, 2.0]
   tank_drive.left_speed  = 1.5f + (tank_drive.left_speed * 0.5f);
